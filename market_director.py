@@ -92,18 +92,23 @@ def analyze_with_groq(news_context: str) -> str:
 
 請使用繁體中文，格式清晰整齊。
 """
-
+# 鎖定 Groq 官方支援的主力開源模型
     preferred_models = [
         "llama-3.3-70b-versatile",
+        "llama3-70b-8192",
         "llama-3.1-70b-versatile",
-        "qwen-2.5-32b",
+        "llama3-8b-8192",
         "mixtral-8x7b-32768",
-        "llama-3.1-8b-instant"
+        "gemma2-9b-it"
     ]
 
     target_models = []
     try:
-        online_models = [m.id for m in client.models.list().data if not m.id.startswith("whisper")]
+        # 僅保留非語音、非第三方特化條款的純文字通用模型
+        online_models = [
+            m.id for m in client.models.list().data 
+            if not m.id.startswith("whisper") and "canopylabs" not in m.id
+        ]
         for m in preferred_models:
             if m in online_models:
                 target_models.append(m)
@@ -112,7 +117,7 @@ def analyze_with_groq(news_context: str) -> str:
     except Exception as e:
         logger.warning(f"動態獲取模型清單異常，直接使用預設順序: {e}")
         target_models = preferred_models
-
+        
     for model_name in target_models:
         try:
             logger.info(f"使用最強模型 [{model_name}] 生成報告...")
