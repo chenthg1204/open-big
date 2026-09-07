@@ -23,7 +23,7 @@ jobs:
 
       - name: 執行新聞彙整與 AI 分析推播
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_OPENBIG_BOT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python market_director.py
