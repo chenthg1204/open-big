@@ -84,32 +84,33 @@ def analyze_with_groq(news_context: str) -> str:
 
     system_prompt = (
         f"你是一位專精全球半導體與總經市場的資深策略師。當前時間為 {today_str}。\n"
-        "【語言鐵律】你必須全程使用「繁體中文（台灣習慣用語）」進行分析與撰寫，"
-        "絕對嚴禁輸出任何英文句子（專有名詞如 TSMC、NVDA、HBM、CoWoS 除外）。\n"
-        "【事實依據】完全嚴格基於下方外電清單分析，嚴禁憑空捏造歷史或不實事件。"
+        "【語言規範】全程必須使用「繁體中文（台灣財經用語）」撰寫，"
+        "嚴禁輸出任何英文段落或分析（公司代號如 TSMC、NVDA、ASML、HBM 等專有名詞除外）。\n"
+        "【嚴謹求實】必須完全根據下方提供的 24 小時即時外電進行推論，嚴禁無中生有捏造歷史或過期事件。"
     )
 
     user_prompt = f"""
-當前基準時間：{today_str}
+基準時間：{today_str}
 
-以下是過去 24 小時內篩選的即時外電（包含英文與中文）：
+以下是過去 24 小時內篩選的即時外電：
 {news_context}
 
-請閱讀上述外電，挑選 6~8 則對「美股、台股、日股、韓股」具備實質市場連動的關鍵事件，並「全程以繁體中文」輸出深度多空分析：
+請閱讀上述外電，挑選 5~7 則對「美股、台股、日股、韓股」具備實質連動影響力的關鍵事件，進行多空評估與供應鏈連動解析。
 
-輸出格式規範：
+請嚴格依照以下格式以「繁體中文」輸出：
 1. 標題：全球市場風向球 - 晨間市場風向球晨報 ({today_str})
-2. 每個事件依序呈現：
-   - 【事件核心動態】：一句話陳述外電事實（繁體中文翻譯與摘要）。
-   - 【主要影響市場】：美股 / 台股 / 日股 / 韓股（指明實質受影響之供應鏈）。
+2. 條列式列出事件，每個事件格式：
+   - 【事件核心動態】：一句話陳述外電真實動態。
+   - 【主要影響市場】：美股 / 台股 / 日股 / 韓股（指明具體受影響的供應鏈環節）。
    - 【市場衝擊指數】：1~10 分。
    - 【多空方向】：強力偏多 / 偏多 / 中性 / 偏空 / 強力偏空。
-   - 【實質因應對策】：指明具體族群（如先進製程封裝、高階散熱、特定原物料等）或避險策略。
-3. 文末附上「今日核心操作方針」（精簡 3 點，全繁體中文）。
+   - 【實質因應對策】：指明具體看好/承壓族群（如 CoWoS 設備、先進製程耗材、高階液冷散熱、伺服器代工等）或避險思維。
+3. 文末附上「今日核心操作方針」（精簡列出 3 點盤面重點，全繁體中文）。
 
-注意：請直接輸出繁體中文分析，不要輸出任何英文解析前言。
+請直接輸出報告本體，不要加入任何開場白或額外寒暄。
 """
 
+    # 優先指定的繁中生成主力模型池（嚴格過濾特殊模型）
     preferred_models = [
         "qwen/qwen3.6-27b",
         "llama-3.1-8b-instant",
@@ -117,14 +118,21 @@ def analyze_with_groq(news_context: str) -> str:
 
     target_models = []
     try:
+        # 排除語音、安全防護、嵌入以及阿拉伯語特化等非通用模型
+        blocked_keywords = [
+            "guard",
+            "whisper",
+            "embed",
+            "safeguard",
+            "canopylabs",
+            "allam",
+        ]
         online_chat_models = [
             m.id
             for m in client.models.list().data
-            if not any(
-                bad in m.id.lower()
-                for bad in ["guard", "whisper", "embed", "safeguard", "canopylabs"]
-            )
+            if not any(bad in m.id.lower() for bad in blocked_keywords)
         ]
+
         for m in preferred_models:
             if m in online_chat_models:
                 target_models.append(m)
@@ -133,12 +141,13 @@ def analyze_with_groq(news_context: str) -> str:
             if m not in target_models:
                 target_models.append(m)
     except Exception as e:
-        logger.warning(f"動態獲取模型清單異常，直接使用預設模型: {e}")
+        logger.warning(f"動態獲取模型清單異常，使用預設配置: {e}")
         target_models = preferred_models
 
     for model_name in target_models:
         try:
-            logger.info(f"使用最強模型 [{model_name}] 生成報告...")
+            logger.info(f"使用模型 [{model_name}] 生成報告...")
+            # max_tokens 設為 950，完全符合 Groq 免費層 1000 OTPM 限制，徹底避免 429 報錯
             res = client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -146,14 +155,14 @@ def analyze_with_groq(news_context: str) -> str:
                 ],
                 model=model_name,
                 temperature=0.2,
-                max_tokens=2500,
+                max_tokens=950,
             )
             return res.choices[0].message.content
         except Exception as e:
-            logger.warning(f"模型 [{model_name}] 異常，嘗試切換下一款: {e}")
-            time.sleep(0.5)
+            logger.warning(f"模型 [{model_name}] 呼叫異常，切換至備援模型: {e}")
+            time.sleep(1)
 
-    return "⚠️ 所有旗艦模型生成皆失敗，請檢查 API 金鑰與連線配額。"
+    return "⚠️ 所有主力模型生成皆未成功，請確認 API 連線狀態。"
 
 
 def send_telegram(text: str):
@@ -177,7 +186,7 @@ def send_telegram(text: str):
                     f"Telegram 推播失敗，狀態碼 {res.status_code}: {res.text}"
                 )
         except Exception as e:
-            logger.error(f"Telegram 連線超時或異常: {e}")
+            logger.error(f"Telegram 連線異常: {e}")
 
 
 if __name__ == "__main__":
