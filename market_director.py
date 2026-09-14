@@ -13,14 +13,23 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-# 鎖定大盤總經、國際市場與半導體科技硬新聞源（剔除個人理財與生活休閒 RSS）
+# 篩選對雲端伺服器（GitHub Actions）友善且絕不擋 IP 的財經與半導體新聞來源
 RSS_SOURCES = {
-    "鉅亨網 國際即時": "https://news.cnyes.com/api/v1/news/xml/headline",
     "CNBC 全球市場焦點": (
         "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114"
     ),
-    "WSJ 市場核心動態": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-    "Investing 國際股市要聞": "https://tw.investing.com/rss/news_285.rss",
+    "CNBC 科技半導體": (
+        "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=19854910"
+    ),
+    "Yahoo 國際財經即時": (
+        "https://finance.yahoo.com/news/rssindex"
+    ),
+    "BBC 商業與全球經濟": (
+        "http://feeds.bbci.co.uk/news/business/rss.xml"
+    ),
+    "鉅亨網 頭條新聞": (
+        "https://news.cnyes.com/api/v1/news/xml/headline"
+    ),
 }
 
 logging.basicConfig(
@@ -42,38 +51,45 @@ def fetch_latest_news() -> str:
       )
   }
   now_utc = datetime.datetime.now(datetime.timezone.utc)
-  max_age_seconds = 24 * 3600
+  max_age_seconds = 36 * 3600  # 放寬至 36 小時以容納美股收盤至隔日清晨跨時區差異
 
   for source_name, base_url in RSS_SOURCES.items():
     try:
       cache_bust_url = f"{base_url}?_t={int(time.time())}"
       feed = feedparser.parse(cache_bust_url, request_headers=headers)
-      for entry in feed.entries[:8]:
+      
+      valid_in_source = 0
+      for entry in feed.entries[:6]:
         title = clean_html(entry.get("title", ""))
         summary = clean_html(entry.get("summary", ""))[:120]
         published_parsed = entry.get("published_parsed")
+
+        pub_str = "即時"
         if published_parsed:
           entry_time = datetime.datetime(
               *published_parsed[:6], tzinfo=datetime.timezone.utc
           )
+          # 超過 36 小時的舊文章跳過
           if (now_utc - entry_time).total_seconds() > max_age_seconds:
             continue
           pub_str = entry_time.strftime("%m-%d %H:%M")
-        else:
-          pub_str = "即時"
 
         if title:
           line = f"• [{source_name}] ({pub_str}) {title}"
           if summary:
             line += f" ｜ 摘要: {summary}"
           collected_articles.append(line)
+          valid_in_source += 1
+
+      logger.info(f"來源 [{source_name}] 成功擷取 {valid_in_source} 則外電")
     except Exception as e:
       logger.warning(f"抓取 {source_name} 異常: {e}")
 
+  logger.info(f"總共累計有效外電：{len(collected_articles)} 則")
   return (
       "\n".join(collected_articles)
       if collected_articles
-      else "暫未取得 24 小時內之最新即時外電。"
+      else "暫未取得有效即時外電。"
   )
 
 
@@ -81,26 +97,23 @@ def analyze_with_groq(news_context: str) -> str:
   if not GROQ_API_KEY:
     return "⚠️ 未設定 GROQ_API_KEY。"
   if "暫未取得" in news_context:
-    return "⚠️ 未抓取到即時外電，為避免模型幻覺已中斷生成。"
+    return "⚠️ 外部新聞來源連線受限，未抓取到有效外電。"
 
   client = Groq(api_key=GROQ_API_KEY)
   today_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
   system_prompt = (
-      f"你是一位專精全球半導體、AI 算力基礎設施與總經市場的資深策略師。當前時間為"
-      f" {today_str}。\n"
-      "【語言鐵律】全程必須使用「繁體中文（台灣財經用語）」撰寫，"
-      "嚴禁輸出任何英文句子與英文前言（TSMC、NVDA、ASML、CoWoS、HBM"
-      " 等專有名詞除外）。\n"
-      "【嚴禁思維鏈】直接輸出最終報告本體，絕對不要輸出 <think>"
-      " 標籤或任何思考推導過程。\n"
-      "【嚴謹求實】必須完全依據下方提供的 24 小時真實外電進行連動研判。"
+      f"你是一位專精全球半導體、AI 算力基礎設施與總經市場的資深策略師。當前時間為 {today_str}。\n"
+      "【語言鐵律】全程必須使用「繁體中文（台灣財經習慣用語）」撰寫，"
+      "嚴禁輸出任何英文段落或英文解說（公司代號如 TSMC、NVDA、ASML、CoWoS、HBM 等專有名詞除外）。\n"
+      "【嚴禁思維鏈】直接輸出最終報告本體，絕對不要輸出 <think> 標籤或任何思考過程。\n"
+      "【嚴謹求實】必須完全依據下方提供的外電進行多空研判，嚴禁憑空編造不實歷史事件。"
   )
 
   user_prompt = f"""
 基準時間：{today_str}
 
-以下是過去 24 小時內篩選的即時財經外電：
+以下是剛抓取到的即時國際財經外電：
 {news_context}
 
 請閱讀上述外電，挑選 5~7 則對「美股、台股、日股、韓股」具備實質市場連動影響力的關鍵事件，進行多空評估與供應鏈連動解析。
@@ -115,7 +128,7 @@ def analyze_with_groq(news_context: str) -> str:
    - 【實質因應對策】：指明具體看好/承壓族群（如 CoWoS 設備、先進製程耗材、高階液冷散熱、伺服器代工等）或避險思維。
 3. 文末附上「今日核心操作方針」（精簡列出 3 點盤面重點，全繁體中文）。
 
-請直接輸出報告，不要加入任何開場問候或額外解說。
+請直接輸出報告，不要加入任何開場白或額外寒暄。
 """
 
   preferred_models = [
@@ -163,8 +176,6 @@ def analyze_with_groq(news_context: str) -> str:
           max_tokens=950,
       )
       raw_content = res.choices[0].message.content
-
-      # 強制過濾並剝離所有模型可能夾帶的 <think>...</think> 標籤與內部思考文本
       cleaned_content = re.sub(
           r"<think>.*?</think>", "", raw_content, flags=re.DOTALL
       ).strip()
